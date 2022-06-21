@@ -1,0 +1,94 @@
+# Настало время почувствовать себя настоящим DS и написать настоящую сверточную НС
+# Развернем сверточную нейросеть на примере распознавания рукописных цифр. Каждый сверточный слой в двумерном случае реализуется классом
+
+# Conv2D:
+# filters - число ядер (каналов)
+# kernel_size - размер ядра (в виде кортежа двух чисел)
+# strides - шаг сканирования фильтров по осям плоскости (по умолчанию 1 пиксель)
+# padding='same' позволяет сохранить размерность после прохождения маской (добавляет "рамку" к изображению, чтобы пройти по всем пикселям)
+
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.datasets import mnist
+from tensorflow import keras
+from tensorflow.keras.layers import Dense, Flatten, Conv2D, MaxPooling2D
+from sklearn.model_selection import train_test_split
+
+# загружаем данные из БД mnist
+(X_train, y_train), (X_test, y_test) = mnist.load_data()
+
+# нормализация входных данных, переход в [0,1]
+X_train = X_train / 255 # 255 - максимальное значени
+X_test = X_test / 255
+
+y_train_cat = keras.utils.to_categorical(y_train,10)
+y_test_cat = keras.utils.to_categorical(y_test,10)
+
+# в Keras на входе каждого сверточного слоя ожидается 4х мерный тензор в формате:
+# (batch, channels, rows, cols) - если data_format='channels_first'
+# или
+# (batch, rows, cols, channels) - если data_format='channels_last' - по умолчанию
+# размерность батча
+# количество строк/столбцов у входной карты признаков или изображения
+# количество каналов:
+# изображение в градациях серого -> 1
+# изображение RGB -> 3
+# карта признаков -> количество фильтров
+
+X_train = np.expand_dims(X_train, axis=3) # добавляем размерность "количество каналов"
+X_test = np.expand_dims(X_test, axis=3)
+
+print(X_train.shape)
+
+# Определение структуры сверточной НС
+
+model = keras.Sequential([
+Conv2D(32, (3,3),padding='same',activation='relu',input_shape=(28,28,1)), # (28,28,1) - изображение 28*28 в градациях серого(1 канал)
+# следующий слой будет укрупнять масштаб полученных признаков
+# для этого используется операция MaxPooling
+# pool_size - размер окна
+# strides - шаг сканирования
+# padding='valid' - не нужно добавлять рамку из нулевых элементов 
+MaxPooling2D((2,2), strides=2), # рамка будет сдвигаться на 2 пикселя без пересечений
+
+Conv2D(64, (3,3),padding='same',activation='relu'), # с помощью 64 фильтров слой будет анализировать предыдущие карты признаков
+MaxPooling2D((2,2), strides=2), # на выходе этого слоя тензор размерностью 7*7 и 64 канала
+
+# итого 2 сверточных слоя и два макспулинга
+Flatten(), # вытягиваем тензор в единый вектор для подачи на полносвязную сеть
+Dense(128, activation='relu'), # обычный слой в 128 нейронов
+Dense(10, activation='softmax') # выходной слой в виде вероятностей
+])
+
+print(model.summary())
+
+Итак, что мы видим в summary и откуда такие числа?
+
+# -> 320  - это 32 фильтра по 10 коэф-в (фильтр 3*3+bias)   
+# -> 18496  -    32-х канальный тензор обрабатывается 64-ю нейронами (3*3*32+1)*64 (фильтр 3*3, 1-bias)
+# -> 401536 - на полносвязный слой подается тензор 7*7*64канала+1 = 3137 
+# Все 3137 входов связаны со всеми 128-ю нейронами 3137*128=401536
+# -> 1290 - на выходной слой подается 128+1 значений, все они связаны с 10-ю выходами,
+# 129*10=1290 
+  
+# Компилируем НС
+model.compile(optimizer='adam',
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+              
+# Обучаем модель
+his = model.fit(X_train, y_train_cat, batch_size=32, epochs=5, validation_split=0.2)
+
+# Тестируем модель
+model.evaluate(X_test, y_test_cat)
+
+# Должно получиться вот так:
+# loss: 0.0273 - accuracy: 0.9919
+# Идеальная модель!
+
+
+
+
+
+
+
