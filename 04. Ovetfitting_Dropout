@@ -1,0 +1,74 @@
+# Если сеть слишком сложная, слишком глубокая - легко переобучиться.
+# малый объем выборки усугубляет ситуацию.
+# Один из подходов к борьбе с переобучением - снижение спиециализации нейронов
+# На каждой итерации обучения НС часть нейронов отбрасываются с определенной вероятностью р
+# Отбрасывание производится перед началом кадждого минибатча
+
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.datasets import mnist
+from tensorflow import keras
+from tensorflow.keras.layers import Dense, Flatten, Dropout
+from sklearn.model_selection import train_test_split
+
+(X_train, y_train), (X_test, y_test) = mnist.load_data()
+# нормализация входных данных, переход в [0,1]
+X_train = X_train / 255 # 255 - максимальное значени
+X_test = X_test / 255
+
+# Преобразование выходных значений в векторы по категориям - в вектор 0 и 1
+# 5 -> 0000010000
+y_train_cat = keras.utils.to_categorical(y_train,10)
+y_test_cat = keras.utils.to_categorical(y_test,10)
+
+# в ручную разобьем выборку на обучающую и валидационную
+size_val = 5000 # объем валидационной выборки МАЛЕНЬКИЙ
+x_train_data = X_train[:size_val]
+y_train_data = y_train_cat[:size_val]
+
+x_valid = X_train[size_val:size_val*2]
+y_valid = y_train_cat[size_val:size_val*2]
+
+# посмотрим в живую как переобучается НС
+# как расходятся кривые обучения learning curves на обучающей и валидационной выборках
+
+model = keras.Sequential([
+      Flatten(input_shape=(28,28,1)), #1 означает 1 байт-один пиксель
+      Dense(3000, activation='relu'), # на скрытом слое МНОГО нейронов
+      #Dropout(0.8), # 0.8 - вероятность отбрасывания
+      # dropout применяется к тому слою, после которого стоит
+      Dense(10, activation='softmax')                
+])
+
+model.compile(optimizer='adam',
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+his = model.fit(x_train_data, y_train_data, batch_size=32, epochs=50, 
+          validation_data=(x_valid, y_valid)) # это ручной вариант разбивки
+          
+plt.plot(his.history['loss'])
+plt.plot(his.history['val_loss'])
+plt.show()
+
+
+# теперь попробуем подлечить переобученную НС с помощью  Dropout
+
+model = keras.Sequential([
+      Flatten(input_shape=(28,28,1)), #1 означает 1 байт-один пиксель
+      Dense(3000, activation='relu'), # на скрытом слое МНОГО нейронов
+      Dropout(0.8), # 0.8 - вероятность отбрасывания
+      # dropout применяется к тому слою, после которого стоит
+      Dense(10, activation='softmax')                
+])
+
+model.compile(optimizer='adam',
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+his = model.fit(x_train_data, y_train_data, batch_size=32, epochs=50, 
+          validation_data=(x_valid, y_valid)) # это ручной вариант разбивки
+          
+plt.plot(his.history['loss'])
+plt.plot(his.history['val_loss'])
+plt.show()
