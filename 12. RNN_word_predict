@@ -1,0 +1,80 @@
+# теперь можно дать НС больше свободы
+# посмотрим как она справится с предсказанием слов целиков
+
+import numpy as np
+from tensorflow.keras.layers import Dense, SimpleRNN, Input, Embedding
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.preprocessing.text import Tokenizer, text_to_word_sequence
+from tensorflow.keras.utils import to_categorical
+
+# разрешим ноутбуку доступ к гугл-диску если мы Colab
+from google.colab import drive
+drive.mount('/content/gdrive')
+
+# загрузим текст, на котором будет обучаться НС
+with open('/content/gdrive/MyDrive/Colab Notebooks/text.txt', 'r', encoding='utf-8') as f:
+    texts = f.read()
+    texts = texts.replace('\ufeff', '')  # убираем первый невидимый символ
+    
+
+# разбиваем текст на слова
+maxWordsCount = 1000 # максимум слов в словаре (возьмутся самые часто повторяющиеся в тексте)
+# лексический запас слов человека 1000, при больших текстах нужно брать 20000
+tokenizer = Tokenizer(num_words=maxWordsCount, filters='!–"—#$%&amp;()*+,-./:;<=>?@[\\]^_`{|}~\t\n\r«»',
+                      lower=True, split=' ', char_level=False) # False - разбиение по словам
+tokenizer.fit_on_texts([texts]) # метод преобразует текст
+
+# посмотри что получается
+dist = list(tokenizer.word_counts.items())
+print(dist[:10]) # увидим слово и его частоту в тексте
+
+# ------------ вот тут решаем проблему памяти colaba
+# преобразуем текст в последовательность в соответствии со словарем
+# каждое слово заменяется на его индекс в словаре
+data = tokenizer.texts_to_sequences([texts])
+# res = to_categorical(data[0], num_classes=maxWordsCount) # затем эти индексы кодируются в OHE-вектора
+# print(res.shape)
+res = np.array( data[0] )
+
+# аналогично символам берем три слова и прогнозируем четвертое, повторяем.
+# формируем входной трехмерный тензор обучающей выборки
+inp_words = 3
+n = res.shape[0] - inp_words
+X = np.array([res[i:i + inp_words] for i in range(n)])
+Y = to_categorical(res[inp_words:], num_classes=maxWordsCount)
+
+
+# строим РНН
+model = Sequential()
+model.add(Embedding(maxWordsCount, 256, input_length = inp_words))
+model.add(SimpleRNN(128, activation='tanh'))
+model.add(Dense(maxWordsCount, activation='softmax'))
+model.summary()
+# компилируем НС
+model.compile(loss='categorical_crossentropy', metrics=['accuracy'], optimizer='adam')
+# обучаем НС
+history = model.fit(X, Y, batch_size=32, epochs=50)
+
+# функция построения фразы
+def buildPhrase(texts, str_len=20):
+    # формируем слова на основе которых делаем прогноз следующего слова
+    res = texts
+    data = tokenizer.texts_to_sequences([texts])[0]
+    for i in range(str_len):
+        # x = to_categorical(data[i: i + inp_words], num_classes=maxWordsCount)  # преобразуем в One-Hot-encoding
+        # inp = x.reshape(1, inp_words, maxWordsCount)
+        x = data[i: i + inp_words]
+        inp = np.expand_dims(x, axis=0)
+        # пропускаем эти слова через сеть
+        # на выходе получаем вектор размерностью maxWordsCount, так как последний слой содержит maxWordsCount нейронов
+        pred = model.predict(inp)
+        indx = pred.argmax(axis=1)[0] # индекс слова с максимальным значением вероятности
+        data.append(indx)
+
+        res += " " + tokenizer.index_word[indx]  # дописываем строку
+
+    return res
+ 
+# Удивляемся!
+res = buildPhrase("кто бы знал")
+print(res)
