@@ -1,0 +1,113 @@
+# Даже самая простая НС может делать чудеса. Например, распознавать рукописные символы
+# Посмотрим как НС будет распознавать рукописные цифры
+
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.datasets import mnist
+from tensorflow import keras
+from tensorflow.keras.layers import Dense, Flatten
+from sklearn.model_selection import train_test_split
+
+# воспользуемся готовой базой рукописных цифр
+# святые люди подготовили 60000 цифр для обучения и еще 10000 для теста
+(X_train, y_train), (X_test, y_test) = mnist.load_data()
+
+# нормализация входных данных, переход в [0,1]
+X_train = X_train / 255 # 255 - максимальное значени
+X_test = X_test / 255
+
+# Преобразование выходных значений в векторы по категориям - в вектор 0 и 1
+# 5 -> 0000010000
+y_train_cat = keras.utils.to_categorical(y_train,10)
+y_test_cat = keras.utils.to_categorical(y_test,10)
+
+# вручную разобьем выборку на обучающую и валидационную
+size_val = 10000 # объем валидационной выборки
+x_val_split = X_train[:size_val]
+y_val_split = y_train_cat[:size_val]
+
+x_train_split = X_train[size_val:]
+y_train_split = y_train_cat[size_val:]
+
+# а можно случайно разбить на доли:
+x_train_split, x_val_split, y_train_split, y_val_split = train_test_split(X_train, y_train_cat, test_size=0.2)
+
+# посмотрим как они выглядят
+plt.figure(figsize=(10,5))
+for i in range(25):
+  plt.subplot(5,5,i+1)
+  plt.xticks([])
+  plt.yticks([])
+  plt.imshow(X_train[i], cmap=plt.cm.binary)  
+plt.show()
+
+# обучим простую полносвязную НС прямого распространения
+model = keras.Sequential([
+      Flatten(input_shape=(28,28,1)), #1 означает 1 байт-один пиксель
+      Dense(128, activation='relu'),
+      Dense(10, activation='softmax')                
+])
+print(model.summary())
+
+# Компиляция НС с оптимизацией градиентного спуска по Adam и 
+# функцией затрат - категориальная кросс-энтропия (лучше всего для классификации)
+
+myAdam = keras.optimizers.Adam(learning_rate=0.1) # шаг сходимости 0.1
+# или 2 вариант:
+myOpt = keras.optimizers.SGD(learning_rate=0.1, nesterov=True)
+model.compile(optimizer=myOpt,
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+
+# Запуск процесса обучения: 80% - обучающая выборка, 20% - валидация 
+# Мини-батч по 32 изображения. После 32 изображений корректируем веса.
+model.fit(x_train_split, y_train_split, batch_size=32, epochs=5, 
+          validation_data=(x_val_split, y_val_split)) # это ручной вариант разбивки
+          #validation_split=0.2) это вариант автоматического выделения случайной доли
+
+# Прогон на тестовой выборке
+model.evaluate(X_test, y_test_cat)
+
+# Пробуем магию!
+n = 4 # сюда ставим порядковый номер числа в датасете, которое будем распознавать
+x = np.expand_dims(X_test[n], axis=0) # берем первое изображение тестовой выборки
+# обязательно в виде трехмерного тензора
+res = model.predict(x)
+print(res) 
+print( f"Распознанная цифра: {np.argmax(res)}" ) # индекс максимального значения вероятности
+plt.imshow(X_test[n], cmap=plt.cm.binary)
+plt.show()
+
+# Применяем магию на всей тестовой выборке!
+
+pred = model.predict(X_test) # пропустим через НС всю тестовую выюорку
+# полученные предсказания будут матрицей 10000*10
+print(pred.shape)
+pred = np.argmax(pred, axis=1) # axis=1 означает взятие вектора-строки длины 10
+print(pred.shape)
+# посмотрим на первые 20 чисел и их предсказания
+print(pred[:20])
+print(y_test[:20])
+
+# но и маги иногда ошибаются
+# выделение неверных результатов
+# наложим маску: поэлементно сравним значения двух векторов
+# где они совпадут будет True
+mask = pred==y_test
+print(mask[:10])
+X_false = X_test[~mask] # инверсия маски найдет все, где значение == False
+p_false = pred[~mask]
+print(X_false.shape)
+
+# посмотрим на ошибки
+for i in range(5):
+  print("Значение сети: " + str(y_test[i]))
+  plt.imshow(X_false[i], cmap=plt.cm.binary)
+  plt.show()
+  
+# вывод
+# писать надо разборчивее!
+
+
+
