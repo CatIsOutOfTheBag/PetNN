@@ -1,0 +1,244 @@
+# Многим хочется рисовать в стиле, например, импрессионизма. А могут немногие
+# Сверточная сеть - одна из тех, кто может
+
+import numpy as np
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from tensorflow import keras
+from google.colab import files
+from io import BytesIO
+from PIL import Image
+
+# загружаем файлы
+upl = files.upload()
+img = Image.open(BytesIO(upl['img.jpg'])) # стилизуемое изображение
+img_style = Image.open(BytesIO(upl['img_style.jpg'])) # изображение стиля
+
+# смотрим что загрузили
+plt.subplot(1,2,1)
+plt.imshow(img)
+plt.subplot(1,2,2)
+plt.imshow(img_style)
+plt.show()
+
+# преобразуем в формати НС VGG
+X_img = keras.applications.vgg19.preprocess_input(np.expand_dims(img, axis=0))
+X_style = keras.applications.vgg19.preprocess_input(np.expand_dims(img_style, axis=0))
+
+# преобразование обратно BGR->RGB
+def deprocess_img(processed_img):
+  X = processed_img.copy()
+  if len(X.shape) == 4:
+    X = np.squeeze(X,0) # убираем нулевую ось
+  assert len(X.shape) == 3, ("Input to deprocess image must be an image of"
+                                "dimension [1, height, width, channel] or [height, width, channel]")
+  # проверяем, действительно ли осталось 3 оси    
+  if len(X.shape) != 3:  
+    raise ValueError("Invalid input to deprocessing input")
+  
+  # добавляем средние значения к соответствующим цветовым компонентам
+  X[:, :, 0] += 103.939
+  X[:, :, 1] += 116.779
+  X[:, :, 2] += 123.68
+
+  # переставляем местами BGR->RGB
+  X = X[:, :, ::-1]
+
+  # отбрасываем все, что >255 и <0
+  X = np.clip(X, 0, 255).astype('uint8')
+  # возвращаем преобразованное обратно изображение
+  return X 
+ 
+# Вспомогательные слои:
+# Для контента:
+# - block5_conv2
+# Для стиля:
+# - block1_conv1
+# - block2_conv1
+# - block3_conv1
+# - block4_conv1
+# - block5_conv1
+
+content_layers = ['block5_conv2']
+style_layers = ['block1_conv1',
+                'block2_conv1',
+                'block3_conv1',
+                'block4_conv1',
+                'block5_conv1'
+                ]
+num_content_layers = len(content_layers) # количество этих слоев
+num_style_layers = len(style_layers)
+
+# загружаем VGG19
+# полносвязной сети на конце не будет, веса - предобученные
+vgg = keras.applications.vgg19.VGG19(include_top=False, weights='imagenet')
+vgg.trainable = False # загруженные веса необучаемые - менять нельзя
+
+# дальнейшая работа с сетью построена так:
+# на вход подается изображение, на выходах определенных слоев берутся карты признаков
+# для этого построим НС на базе VGG19, используя класс Model(коллекции входов/выходов)
+
+# выделим необходимые выходы сети VGG19
+style_outputs = [vgg.get_layer(name).output for name in style_layers]
+content_outputs = [vgg.get_layer(name).output for name in content_layers]
+model_outputs = style_outputs + content_outputs # обьединяем
+
+print(vgg.input)
+for m in model_outputs:
+  print(m)
+
+# собираем нашу модель
+model = keras.models.Model(vgg.input, model_outputs)
+print(model.summary())
+
+
+# функция потерь по контенту
+# пропуская через НС исходное изображение получаем base_loss
+# пропуская стилизованное - получаем target
+# находим среднее значение квадратов разностей
+
+def get_content_loss(base_content, target):
+  return tf.reduce_mean(tf.square(base_content-target))
+  
+ 
+# функции потерь по стилям:
+
+# функция вычисления матрицы Грама для заданного тензора:
+def gram_matrix(input_tensor):
+  channels = int(input_tensor.shape[-1]) # в размерности nH*nW*nC берем число каналов nC
+  # преобразовываем трехмерный тензор в двумерный
+  # nH*nW*nC -> (nH*nW) * nC
+  a = tf.reshape(input_tensor, [-1, channels])
+  # берем первую размерность полученной матрицы -> (nH*nW):
+  n = tf.shape(a)[0]
+  gram = tf.matmul(a,a, transpose_a=True) # получаем произведение a*a_транспонированная
+  # усредняем и возвращаем
+  return gram / tf.cast(n, tf.float32)
+  
+# функция вычисления потери стиля для определенного слоя НС:
+# для разных 5 слоев сверточной сети будем вычислять рассогласования по стилям
+def get_style_loss(base_style, gram_target): # (карта стилей формируемого изобр/матрица грама для соотв.слоя стилевого изображения)
+  gram_style = gram_matrix(base_style)
+  return tf.reduce_mean(tf.square(gram_style-gram_target))
+  
+# общая функция, которая вычисляет все потери
+# loss_weights это два параметра
+# alpha - content_weight
+# betta - style_weight
+def compute_loss(model, loss_weights, init_image, gram_style_features, content_features):
+  style_weight, content_weight = loss_weights
+  
+  # пропускаем формируемое изображение через НС:
+  model_outputs = model(init_image) # на выходе значения на каждом нужном сверточном слое
+
+  # выделяем карты признаков для стилей и для контента
+  style_output_features = model_outputs[:num_style_layers]
+  content_output_features = model_outputs[num_style_layers:]
+
+  # величины потерь для стиля и контента
+  style_score = 0
+  content_score = 0
+
+  # вычисляем потерю стиля Js (из общей формулы потери J=alpha*Jc + betta*Js):
+  # gram_style_features - уже вычисленные матрицы Грама для изображения стиля
+  # content_features - уже вычисленные контентные характеристики исходного изобр.
+  # цикл по слоям
+  weight_per_style_layer = 1.0 / float(num_style_layers)
+  for target_style, comb_style in zip(gram_style_features, style_output_features):
+    style_score += weight_per_style_layer * get_style_loss(comb_style[0], target_style)
+
+  # вычисляем потерю контента Jc (из общей формулы потери J=alpha*Jc + betta*Js),
+  # тут в цикле один слой
+  weight_per_content_layer = 1.0 / float(num_content_layers)
+  for target_content, comb_content in zip(content_features, content_output_features):
+    content_score += weight_per_content_layer * get_content_loss(comb_content[0], target_content)
+
+  # умножаем вычисленные  Js и Jc на alpha и betta
+  style_score *= style_weight
+  content_score *= content_weight
+
+  # суммируем в общий критерий качества loss (в формуле J)
+  loss = style_score + content_score
+  return loss, style_score, content_score 
+  
+def get_feature_representations(model):
+  
+  # пропускаем через НС исходное и стилевые изображения x_style, x_img
+  style_outputs = model(X_style)
+  content_outputs = model(X_img)  
+
+  # получаем на выходе карты признаков по контенту и карты признаков по стилю
+  style_features = [style_layer[0] for style_layer in style_outputs[:num_style_layers]]
+  content_features = [content_layer[0] for content_layer in content_outputs[num_style_layers:]]
+  return style_features, content_features
+  
+# определяем вспомогательные переменные
+num_iterations = 100 # число итераций
+content_weight = 1e3 # важность контента alpha
+style_weight = 1e-2 # важность стиля betta
+
+# заранее пропускаем через НС исходное и стилевые изображения x_style, x_img
+# получаем на выходе карты признаков по контенту и карты признаков по стилю
+# заранее получаем матрицу Грама для стилевого изображения
+
+style_features, content_features = get_feature_representations(model)
+gram_style_features = [gram_matrix(style_feature) for style_feature in style_features]
+
+init_image = np.copy(X_img) # исходное изображение
+# преобразуем в переменную Variable, которую понимает tensorflow
+init_image = tf.Variable(init_image, dtype=tf.float32)
+
+# задаем оптимизатор для алгоритма градиентного спуска
+opt = tf.compat.v1.train.AdamOptimizer(learning_rate=2, beta1=0.99, epsilon=1e-1)
+iter_count = 1 # счетчик итераций
+best_loss, best_img = float('inf'), None  # наименьшие потери и соотв.им изображение
+loss_weight = (style_weight, content_weight) # betta/alpha
+
+# сведем все параметры в словарь для наглядности:
+
+cfg = {
+    'model': model,
+    'loss_weights': loss_weight,
+    'init_image': init_image,
+    'gram_style_features': gram_style_features,
+    'content_features': content_features
+}
+
+# переменные для преобразования BGR->RGB
+norm_means = np.array([103.939, 116.779, 123.68])
+min_vals = -norm_means
+max_vals = 255 - norm_means
+imgs = [] # тут будут все изображения, созданные в процессе стилизации
+
+# сам алгоритм градиентного спуска
+for i in range(num_iterations):
+    with tf.GradientTape() as tape: # вычисление всех необходимых производных
+       all_loss = compute_loss(**cfg) # compute_loss пропускает изображение через НС и возвращает значение потерь
+    
+    loss, style_score, content_score = all_loss
+    grads = tape.gradient(loss, init_image)
+
+    opt.apply_gradients([(grads, init_image)]) # применение вычисленного градиента к пикселям изображения
+    clipped = tf.clip_by_value(init_image, min_vals, max_vals) # ограничиваем пиксель мин и макс значением
+    # так как каждая цветовая компонента должна находиться в своих пределех значений
+    init_image.assign(clipped)
+    
+    # ищем изображение с наименьшми потерями и сохраняем его
+    if loss < best_loss:
+      # Update best loss and best image from total loss. 
+      best_loss = loss
+      best_img = deprocess_img(init_image.numpy())
+
+      # Use the .numpy() method to get the concrete numpy array
+      plot_img = deprocess_img(init_image.numpy())
+      imgs.append(plot_img)
+      print('Iteration: {}'.format(i))
+
+plt.imshow(best_img)
+print(best_loss)
+
+image = Image.fromarray(best_img.astype('uint8'), 'RGB')
+image.save("result.jpg")
+files.download("result.jpg")
+
+# выстрадав все эти строки можно, например, увидеть Патрика в стиле импрессионизм
