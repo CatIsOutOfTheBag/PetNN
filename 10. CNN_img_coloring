@@ -1,0 +1,98 @@
+# Когда в муках рождена простая сверточная сеть - она растет и просит раскраску
+# Посмотрим, как НС раскрасит изображение из оттенков серого в RGB
+
+from keras.layers import Conv2D, UpSampling2D, InputLayer # слои
+from keras.models import Sequential
+from keras.preprocessing.image import ImageDataGenerator, array_to_img, img_to_array, load_img
+from skimage.color import rgb2lab, lab2rgb
+from skimage.io import imsave
+import numpy as np
+from google.colab import files
+from io import BytesIO
+from PIL import Image
+import matplotlib.pyplot as plt
+
+# загрузим изображение для обучения НС
+upl = files.upload()
+names = list(upl.keys())
+img = Image.open(BytesIO(upl[names[0]]))
+
+# ф-ия преобразует изображение в формат LAB и выделяет яркостную и цветовые компоненты
+def processed_image(img):
+  image = img.resize( (256, 256), Image.BILINEAR)
+  image = np.array(image, dtype=float)
+  size = image.shape
+  lab = rgb2lab(1.0/255*image)
+  X, Y = lab[:,:,0], lab[:,:,1:]
+  # яркостная компонента в диапазоне [0,100]
+  # цветовая [-1,1]
+
+  Y /= 128    # нормируем выходные значение в диапазон от -1 до 1
+
+  # на выходе НС тензор из двух цветовых компонент в диапазоне от -1 до 1
+  # меняем размерности для формирования тензоров
+  X = X.reshape(1, size[0], size[1], 1) # батч/размеры изображения/1 цветовой канал
+  Y = Y.reshape(1, size[0], size[1], 2) # .../2 цветовых канала
+  return X, Y, size
+  
+# пропускаем изображение через функцию для получения цветовых каналов
+X, Y, size = processed_image(img) # size - размеры исходного изображения
+
+# построим НС
+model = Sequential()
+# изображение размерностью x,y и одним цветовым каналом
+model.add(InputLayer(input_shape=(None, None, 1)))  
+# первый сверточный слой из 64 фильтров, размером ядра 3*3,
+# на выходе тот же самый размер карт признаков, что и исходное изображение
+model.add(Conv2D(64, (3, 3), activation='relu', padding='same')) 
+# то же самое, но с шагом сканирования 2 - на выходе карта признаков уменьшается в 2 раза
+#  MaxPooling путает структуру самого изображения, что не подходит для колоризации
+# для сохранения пространственной структуры лучше использовать шаг сканирования для уменьшения размерности карты признааков
+model.add(Conv2D(64, (3, 3), activation='relu', padding='same', strides=2))
+model.add(Conv2D(128, (3, 3), activation='relu', padding='same'))
+model.add(Conv2D(128, (3, 3), activation='relu', padding='same', strides=2))
+model.add(Conv2D(256, (3, 3), activation='relu', padding='same'))
+model.add(Conv2D(256, (3, 3), activation='relu', padding='same', strides=2))
+model.add(Conv2D(512, (3, 3), activation='relu', padding='same'))
+model.add(Conv2D(256, (3, 3), activation='relu', padding='same'))
+model.add(Conv2D(128, (3, 3), activation='relu', padding='same'))
+# UpSampling2D - работает противополжно MaxPooling-у - увеличивает карту признаков в 2 раза по каждой из координат
+# каждый элемент карты признаков превращается в размер 2*2 простым копированием
+model.add(UpSampling2D((2, 2)))
+model.add(Conv2D(64, (3, 3), activation='relu', padding='same'))
+model.add(UpSampling2D((2, 2)))
+model.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
+# на выходе тензор из двух цветовых каналов, ф-ия активации гиперболический тангенс, чтобы получить диапазон [-1,1]
+model.add(Conv2D(2, (3, 3), activation='tanh', padding='same')) # доводим до исходного размера 
+model.add(UpSampling2D((2, 2)))
+# три раза уменьшили, затем три раза увеличила карту признаков
+
+# компилируем НС
+model.compile(optimizer='adam', loss='mse') # минимум среднего квадрата ошибки
+model.fit(x=X, y=Y, batch_size=1, epochs=50) #  на вход - градации серого, на выходе 2 цветных канала
+
+# загрузим что будем раскрашивать, обработаем
+upl = files.upload()
+names = list(upl.keys())
+img = Image.open(BytesIO(upl[names[0]]))
+X, Y, size = processed_image(img)
+
+# пропустим яркость через НС
+# цветовые каналы модель построит сама
+output = model.predict(X)
+
+output *= 128 # увеличили компоненты от [-1,1] до [-128, 127]
+min_vals, max_vals = -128, 127
+ab = np.clip(output[0], min_vals, max_vals) # ограничиваем цветовые компоненты диапазоном
+
+cur = np.zeros((size[0], size[1], 3)) # формируем коллекцию, в которой будет сгенерированное изображение
+cur[:,:,0] = np.clip(X[0][:,:,0], 0, 100) # помещаем туда яркостную компоненту
+cur[:,:,1:] = ab # затем цветовые 
+
+# отображаем исходное
+plt.subplot(1, 2, 1) 
+plt.imshow(img)
+
+# и сгенерированное изображения
+plt.subplot(1, 2, 2)
+plt.imshow(lab2rgb(cur)) # преобразовав в формат RGB
