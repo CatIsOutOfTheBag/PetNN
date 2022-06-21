@@ -1,0 +1,53 @@
+# Базовые лошадки распознавания изображений
+# Сразу заметка:
+# Два слоя с маской 3*3 это эквивалент одно слоя с маской 5*5
+# Но два слоя лучше, ведь можно получить меньшее число нейронов:
+# 5*5+1(это bias) = 26
+# тогда как 2*(3*3+1) = 20
+# Магия!
+
+# Сети VGG-16 и VGG-19 реализованы в пакете keras:
+# tf.keras.applications.VGG16
+# tf.keras.applications.VGG19
+
+# include_top - включать или нет конечную полносвязную сеть(True/False)
+# weights='imagenet' - какие веса(по умолчанию уже обученные на БД imagenet)
+# lasses - число выходных нейронов (по умолчанию 1000)
+# classifier_activation - функция активации
+
+# На входе сеть ожидает изображение в формате BGR (не RGB) со смещенными весами
+# (B) 103.939, (G) 116.779, (R) 123.68
+# к такому воду приводим с помощью
+# keras.applications.vgg16.preprocess_input(img)
+
+from IPython.core.display import Image
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.datasets import mnist
+from tensorflow import keras
+from google.colab import files
+from io import BytesIO
+from PIL import Image
+from tensorflow.keras.preprocessing import image as kp_image
+
+model = keras.applications.VGG16()
+uploaded = files.upload()
+# Патрик будет очень рад быть распознанным, он даже поднял руки(руки?) и сдается
+img = Image.open(BytesIO(uploaded['Patric224.jpg']))
+plt.imshow(img)
+
+
+img = np.array(img) # преобразуем изображение в массив numpy
+X = keras.applications.vgg16.preprocess_input(img) # форматируем под сеть
+print(X.shape)
+X = np.expand_dims(X, axis=0) # добавим пространственную ось, чтобы подать на модель 
+# в формате батч/кол-во строк/столбцов/число каналов
+print(X.shape)
+
+# Классифицируем Патрика
+res = model.predict(X)
+print(np.argmax(res))
+# Получим номер нейрона, который принял максимальное значение и указывает на класс патрика
+# вот тут расшифровка:
+# https://gist.github.com/yrevar/942d3a0ac09ec9e5eb3a
+# Патрик - это pinwheel - вертушка на палочке муахахахахаха
