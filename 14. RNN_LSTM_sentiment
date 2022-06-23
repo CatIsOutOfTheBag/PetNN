@@ -94,7 +94,7 @@ model.summary()
 # компилируем
 model.compile(loss='categorical_crossentropy', metrics=['accuracy'], optimizer=Adam(0.0001))
 # запускаем процесс обучения
-history = model.fit(X, Y, batch_size=32, epochs=50)
+%time history = model.fit(X, Y, batch_size=32, epochs=50)
 
 reverse_word_map = dict(map(reversed, tokenizer.word_index.items()))
 
