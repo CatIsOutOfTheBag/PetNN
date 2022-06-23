@@ -1,0 +1,126 @@
+#  Как НС определяет ваше настроение?
+# теперь с рекурентными блоками GRU
+import numpy as np
+import re
+
+from tensorflow.keras.layers import Dense, GRU, LSTM, Input, Dropout, Embedding
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.preprocessing.text import Tokenizer, text_to_word_sequence
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+import pprint
+
+# разрешим ноутбуку доступ к гугл-диску
+from google.colab import drive
+drive.mount('/content/gdrive')
+
+# положительные высказывания
+with open('/content/gdrive/MyDrive/Colab Notebooks/train_data_true.txt', 'r', encoding='utf-8') as f:
+    texts_true = f.readlines() # созаем коллекцию
+    texts_true[0] = texts_true[0].replace('\ufeff', '') #убираем первый невидимый символ
+
+# отрицательные высказывания
+with open('/content/gdrive/MyDrive/Colab Notebooks/train_data_false.txt', 'r', encoding='utf-8') as f:
+    texts_false = f.readlines()
+    texts_false[0] = texts_false[0].replace('\ufeff', '') #убираем первый невидимый символ
+    
+    
+# соединяем положительные и отрицательные высказывания в кучу
+texts = texts_true + texts_false # общая коллекция фраз-строк
+count_true = len(texts_true) # посчитаем количество положительных
+count_false = len(texts_false) # и отрицательных
+total_lines = count_true + count_false # общее количество
+print(count_true, count_false, total_lines)
+pprint.pprint(texts[:10])
+
+# разбиваем текст на слова
+maxWordsCount = 1000 # максимальное количество слов (останутся 1000 самых часто встречающихся)
+tokenizer = Tokenizer(num_words=maxWordsCount, filters='!–"—#$%&amp;()*+,-./:;<=>?@[\\]^_`{|}~\t\n\r«»', lower=True, split=' ', char_level=False)
+tokenizer.fit_on_texts(texts) # Tokenizer применяется для каждой отдельной строки, строки между собой не соединяются
+
+# смотрим частоты встречаемости слов в тексте
+dist = list(tokenizer.word_counts.items())
+print(dist[:10]) # смотрим на первые 10 слов
+print(texts[0][:100]) # и их частоты встречаемости в тексте
+
+# преобразуем текст в последовательность чисел в соответствии с полученным словарем
+max_text_len = 10
+data = tokenizer.texts_to_sequences(texts) # вот тут образуются наборы чисел
+# такие наборы чисел будут выглядеть вот так:
+
+# [[1,2,3],
+#  [4,5,6,7,8,9],
+#  [10,11,12,13,14,15,16],
+#  ...
+#  ]
+
+# встроенный метод pad_sequences добавляет к коротким фразам нули, длинные обрезает
+data_pad = pad_sequences(data, maxlen=max_text_len) 
+print(data_pad)
+
+print( list(tokenizer.word_index.items()) ) # коллекция списков одинаковой длины, нули в начале
+
+X = data_pad # обучающая выборка
+
+# выборка требуемых значний на выходе НС
+# для положительных высказываний вектор [1,0]
+# для отрицательных [0,1]
+# мы знаем, что в выбоке сначала положительные высказывания, затем отрицательные
+# накопируем вектор [1, 0] count_true раз, вектор [0, 1] count_false раз
+Y = np.array([[1, 0]]*count_true + [[0, 1]]*count_false)
+print(X.shape, Y.shape)
+
+# перемешиваем наблюдения для лучшего обучения НС
+indeces = np.random.choice(X.shape[0], size=X.shape[0], replace=False)
+X = X[indeces]
+Y = Y[indeces]
+
+# создаем модель НС
+#  используем слой LSTM
+# units - количество нейронов в полносвязных слоях внутри LSTM-ячейки
+model = Sequential()
+# Embedding-слой
+# размерность входных данных = количество слов нашего словаря
+# размерность выходных данных = 128
+# длина каждого вектора = ограничению max_text_len
+model.add(Embedding(maxWordsCount, 128, input_length = max_text_len))
+# создаем РНН из 2х LSTM слоев
+# получим STACKED RNN 
+# ---------------------->
+# теперь попробуем тут слои GRU
+model.add(GRU(128, return_sequences=True))
+model.add(GRU(64))
+# на выходе полносвязный слой из двух нейронов
+model.add(Dense(2, activation='softmax'))
+model.summary()
+
+# компилируем
+model.compile(loss='categorical_crossentropy', metrics=['accuracy'], optimizer=Adam(0.0001))
+
+# запускаем процесс обучения
+%time history = model.fit(X, Y, batch_size=32, epochs=50)
+# можем увидеть, что обучение идет быстрее, чем у LSTR
+
+reverse_word_map = dict(map(reversed, tokenizer.word_index.items()))
+
+# преобразование индексов в текст
+def sequence_to_text(list_of_indices):
+    words = [reverse_word_map.get(letter) for letter in list_of_indices]
+    return(words)
+
+
+t = "деньги портят людей".lower() # понижаем регистр тестового высказывания
+data = tokenizer.texts_to_sequences([t]) # пропускаем через токенайзер-получаем числа
+data_pad = pad_sequences(data, maxlen=max_text_len) # преобразуем в вектор нужного формата(дополненный нулями или обрезанный)
+# может случиться так, что в тестовой выборке будут слова, которых не было в тексте
+# нужно посмотреть, какую на самом деле фразу мы анализируем
+# для этого преобразуем последовательность обратно в текст и выведем на экран
+print( sequence_to_text(data[0]) )
+
+# подаем ветор на вход НС
+res = model.predict(data_pad)
+print(res, np.argmax(res), sep='\n')
+
+# получим вектор [a,b]
+# a - вероятность принадлежности к классу 1 (позитивное высказывание)
+
