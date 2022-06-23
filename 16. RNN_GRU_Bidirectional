@@ -1,0 +1,57 @@
+# решим задачу регрессии с помощью двунаправленной RNN GRU
+import numpy as np
+import matplotlib.pyplot as plt
+# Импорт класса Bidirectional
+from tensorflow.keras.layers import Dense, GRU, Input, Dropout, Bidirectional
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.optimizers import Adam 
+
+# построим синусоиду с шумом , 10000 точек
+N = 10000
+# это наша обучающая выборка
+data = np.array([np.sin(x/20) for x in range(N)]) + 0.1*np.random.randn(N)
+plt.plot(data[:100])
+
+off = 3 # шаг прогноза: три шага назад и три знака вперед
+length = off*2+1 # общая длина анализируемого отрезка = 3 шага+3 шага+прогнозируемая точка
+# составим диагональную матрицу из обучающей выборки методом np.diag
+# hstack создает горизонтальную последовательность векторов
+# пройдем по обучающей выборке, шагая:
+# 1:4, 5:8 -> первый отрезок 1,2,3 ;второй отрезок 5,6,7. Точка 4 между ними - предсказываемое значение
+# сдвигаемся на 1 значение
+X = np.array([ np.diag(np.hstack((data[i:i+off], data[i+off+1:i+length]))) for i in range(N-length)])
+Y = data[off:N-off-1]
+print(X.shape, Y.shape, sep='\n')
+
+model = Sequential()
+model.add(Input((length-1, length-1)))
+model.add( Bidirectional(GRU(2)) )
+model.add(Dense(1, activation='linear'))
+model.summary()
+
+model.compile(loss='mean_squared_error', optimizer=Adam(0.01))
+
+%time history = model.fit(X, Y, batch_size=32, epochs=10)
+
+# предскажем первые 200 точек
+M = 200
+# ХХ - это то, что уже предсказали, остается слева от движения предсказания
+XX = np.zeros(M)
+XX[:off] = data[:off] # первые три точки берутся из обучающей выборки
+
+# движемся от 1 до М
+# складываем в диагональную матрицу три предсказанных значния(слева по движению)
+# три обучающих точки (справа по движению)
+for i in range(M-off-1):
+  x = np.diag( np.hstack( (XX[i:i+off], data[i+off+1:i+length])) )
+  x = np.expand_dims(x, axis=0) # добавляем ось, чтобы попасть в размерность модели
+  y = model.predict(x) # предсказываем току "серединку"
+  XX[i+off] = y # складываем ее в предсказанную кучу
+  
+# посмотрим что было и что предсказали
+plt.plot(XX[:M])
+plt.plot(data[:M])
+# видим, как НС сглаживает график, уменьшая среднеквадратичную ошибку  
+  
+  
+
